@@ -258,14 +258,14 @@ _eva_bind_keys() {
 
 # --- Initialize ---
 _eva_init() {
-    # Defer to first precmd so ZLE is fully ready before bindkey
+    # Defer to line-init so ZLE is fully ready before bindkey
     autoload -Uz add-zle-hook-widget
-    add-zle-hook-widget precmd _eva_real_init
+    add-zle-hook-widget line-init _eva_real_init
 }
 
 _eva_real_init() {
     # Run once, then remove self
-    add-zle-hook-widget -d precmd _eva_real_init 2>/dev/null
+    add-zle-hook-widget -d line-init _eva_real_init 2>/dev/null
 
     _eva_setup
     _eva_bind_keys
