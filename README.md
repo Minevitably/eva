@@ -21,7 +21,7 @@ Keystroke → ZSH Plugin → Unix Socket → eva Daemon → DeepSeek API → Pre
 ## Install
 
 ```bash
-git clone https://github.com/yourname/eva.git
+git clone https://github.com/Minevitably/eva.git
 cd eva
 bash install.sh
 ```
