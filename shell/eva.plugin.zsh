@@ -17,21 +17,21 @@ zmodload zsh/sched 2>/dev/null || { echo "eva: zsh/sched module not available" >
 : ${EVA_POLL_INTERVAL:=1}        # seconds between zpty reads
 
 # --- State ---
-typeset -g _EVA_SEQ=0           # latest request sequence number
-typeset -g _EVA_LAST_SEQ=0      # sequence number that produced current POSTDISPLAY
-typeset -g _EVA_BRIDGE_OK=false # whether the zpty bridge is alive
-typeset -g _EVA_LAST_REQ=0.0    # timestamp of last request (for debounce)
-typeset -g _EVA_PENDING=false   # whether a request is in flight
-typeset -g _EVA_POLLING=false   # whether poll loop is active
+typeset -g _EVA_SEQ=0
+typeset -g _EVA_LAST_SEQ=0
+typeset -g _EVA_BRIDGE_OK=false
+typeset -g _EVA_LAST_REQ=0.0
+typeset -g _EVA_PENDING=false
+typeset -g _EVA_POLLING=false
+typeset -g _EVA_INITIALIZED=false
 
-# Highlight style: use ZSH autosuggest color if available, else grey
+# Highlight style
 typeset -g EVA_HIGHLIGHT_FG
 EVA_HIGHLIGHT_FG="${ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE:-fg=240}"
 
 
 # --- Bridge lifecycle ---
 _eva_start_bridge() {
-    # Kill existing bridge if any
     zpty -d eva-bridge 2>/dev/null
 
     local bridge_py="$EVA_HOME/eva-bridge"
@@ -45,15 +45,10 @@ _eva_start_bridge() {
     fi
 }
 
-_eva_ensure_bridge() {
-    if [[ "$_EVA_BRIDGE_OK" != "true" ]]; then
-        _eva_start_bridge
-    fi
-}
-
 # --- Polling: read responses from bridge ---
 _eva_poll() {
     [[ "$_EVA_POLLING" != "true" ]] && return
+    [[ "$_EVA_INITIALIZED" != "true" ]] && return
 
     if [[ "$_EVA_BRIDGE_OK" != "true" ]]; then
         sched +$EVA_POLL_INTERVAL _eva_poll_cb
@@ -65,7 +60,6 @@ _eva_poll() {
         local seq="${response%%$'\t'*}"
         local pred="${response#*$'\t'}"
 
-        # Only accept the latest prediction
         if (( seq >= _EVA_LAST_SEQ )); then
             _EVA_LAST_SEQ=seq
             _EVA_PENDING=false
@@ -84,9 +78,7 @@ _eva_poll() {
     sched +$EVA_POLL_INTERVAL _eva_poll_cb
 }
 
-_eva_poll_cb() {
-    _eva_poll
-}
+_eva_poll_cb() { _eva_poll }
 
 _eva_start_polling() {
     if [[ "$_EVA_POLLING" != "true" ]]; then
@@ -97,24 +89,20 @@ _eva_start_polling() {
 
 # --- Build request JSON and send ---
 _eva_request_predict() {
-    _eva_ensure_bridge
-    [[ "$_EVA_BRIDGE_OK" != "true" ]] && return
+    [[ "$_EVA_INITIALIZED" != "true" ]] && return
+    [[ "$_EVA_BRIDGE_OK" != "true" ]] && { _eva_start_bridge; return; }
 
-    # Debounce: skip if too soon after last request
     local now=$EPOCHREALTIME
     if (( now - _EVA_LAST_REQ < EVA_DEBOUNCE_MS / 1000.0 )) && [[ -n "$POSTDISPLAY" ]]; then
         return
     fi
     _EVA_LAST_REQ=$now
 
-    # Increment seq to invalidate any in-flight requests
     (( _EVA_SEQ++ ))
     _EVA_PENDING=true
 
-    # Get recent history
     local history_json="[]"
     if (( ${#history} > 0 )); then
-        # Get last 10 commands as a JSON array via python (safe escaping)
         history_json=$(fc -l -10 -n 2>/dev/null | python3 -c "
 import sys, json
 cmds = [line.rstrip('\n') for line in sys.stdin if line.strip()]
@@ -123,7 +111,6 @@ print(json.dumps(cmds))
     fi
     [[ -z "$history_json" ]] && history_json="[]"
 
-    # Build the full request JSON safely via python
     local json
     json=$(python3 -c "
 import json, sys
@@ -138,61 +125,21 @@ print(json.dumps(req))
 
     [[ -z "$json" ]] && return
 
-    # Send to bridge via zpty
     zpty -w eva-bridge "$json" 2>/dev/null
 }
 
-# --- Keypress handler ---
-_eva_self_insert() {
-    # Call original self-insert to actually type the character
-    zle .self-insert
 
-    # Then request a prediction
+# ============================================================
+#  Override built-in ZLE widgets (no custom widgets, no bindkey)
+# ============================================================
+
+# --- self-insert: type character + request prediction ---
+_eva_self_insert() {
+    zle .self-insert
     _eva_request_predict
 }
 
-# --- Accept prediction ---
-_eva_accept() {
-    if [[ -n "$POSTDISPLAY" ]]; then
-        BUFFER+="$POSTDISPLAY"
-        CURSOR=$#BUFFER
-        POSTDISPLAY=""
-        region_highlight=()
-        zle -R
-    fi
-}
-
-# --- Accept next word of prediction ---
-_eva_accept_word() {
-    if [[ -n "$POSTDISPLAY" ]]; then
-        local word="${POSTDISPLAY%% *}"
-        if [[ "$word" == "$POSTDISPLAY" ]]; then
-            # Last word — accept full prediction
-            _eva_accept
-        else
-            BUFFER+="$word "
-            CURSOR=$#BUFFER
-            POSTDISPLAY="${POSTDISPLAY#$word }"
-            POSTDISPLAY="${POSTDISPLAY## }"
-            zle -R
-        fi
-    fi
-}
-
-# --- Clear prediction ---
-_eva_clear() {
-    POSTDISPLAY=""
-    region_highlight=()
-    zle -R
-}
-
-# --- Redraw hook (called by ZSH before each redraw) ---
-_eva_line_pre_redraw() {
-    # Ensure polling is running
-    _eva_start_polling
-}
-
-# --- Backward delete handler — clear prediction then delete ---
+# --- backward-delete-char: delete + clear prediction + re-request ---
 _eva_backward_delete_char() {
     zle .backward-delete-char
     POSTDISPLAY=""
@@ -200,75 +147,83 @@ _eva_backward_delete_char() {
     _eva_request_predict
 }
 
-# --- Enter (accept-line) handler — clear prediction before executing ---
+# --- accept-line: clear prediction before executing command ---
 _eva_accept_line() {
     POSTDISPLAY=""
     region_highlight=()
     zle .accept-line
 }
 
-# --- Setup ---
-_eva_setup() {
-    # Define widgets
-    zle -N eva-self-insert _eva_self_insert
-    zle -N eva-accept _eva_accept
-    zle -N eva-accept-word _eva_accept_word
-    zle -N eva-clear _eva_clear
-    zle -N eva-backward-delete-char _eva_backward_delete_char
-    zle -N eva-accept-line _eva_accept_line
-    zle -N eva-line-pre-redraw _eva_line_pre_redraw
+# --- expand-or-complete (Tab): accept prediction if present, else fallback to completion ---
+_eva_expand_or_complete() {
+    if [[ -n "$POSTDISPLAY" ]]; then
+        BUFFER+="$POSTDISPLAY"
+        CURSOR=$#BUFFER
+        POSTDISPLAY=""
+        region_highlight=()
+        zle -R
+    else
+        zle .expand-or-complete
+    fi
+}
 
-    # Hook into line-pre-redraw (called before each redraw)
+# --- Accept next word (Alt+Tab) ---
+_eva_accept_word() {
+    if [[ -n "$POSTDISPLAY" ]]; then
+        local word="${POSTDISPLAY%% *}"
+        if [[ "$word" == "$POSTDISPLAY" ]]; then
+            BUFFER+="$POSTDISPLAY"
+            CURSOR=$#BUFFER
+            POSTDISPLAY=""
+        else
+            BUFFER+="$word "
+            CURSOR=$#BUFFER
+            POSTDISPLAY="${POSTDISPLAY#$word }"
+            POSTDISPLAY="${POSTDISPLAY## }"
+        fi
+        region_highlight=()
+        zle -R
+    fi
+}
+
+# --- Clear prediction on ESC ---
+_eva_clear() {
+    POSTDISPLAY=""
+    region_highlight=()
+    zle -R
+}
+
+
+# --- Deferred init: runs once on first precmd, when ZLE is fully ready ---
+_eva_init() {
+    # Remove self from precmd
+    precmd_functions=("${precmd_functions[@]:#_eva_init}")
+
+    # Override built-in widgets (this is ALL we need — no bindkey!)
+    zle -N self-insert _eva_self_insert
+    zle -N backward-delete-char _eva_backward_delete_char
+    zle -N accept-line _eva_accept_line
+    zle -N expand-or-complete _eva_expand_or_complete
+    zle -N accept-word _eva_accept_word
+    zle -N clear-screen _eva_clear
+
+    # Hook into line-pre-redraw to keep polling alive
     autoload -Uz add-zle-hook-widget
-    add-zle-hook-widget line-pre-redraw eva-line-pre-redraw 2>/dev/null || true
+    add-zle-hook-widget line-pre-redraw _eva_start_polling 2>/dev/null || true
 
     # Ensure EVA_HOME exists
     mkdir -p "$EVA_HOME"
 
-    # Start bridge
+    # Start bridge and polling
     _eva_start_bridge
-
-    # Start polling loop (will self-sustain)
     _eva_start_polling
+    _EVA_INITIALIZED=true
 }
 
-# --- Rebind keys ---
-_eva_bind_keys() {
-    # Printable characters → our self-insert
-    bindkey -M emacs ' ' eva-self-insert
-    bindkey -M emacs '^?' eva-backward-delete-char  # Backspace
-    bindkey -M emacs '^H' eva-backward-delete-char  # Ctrl+H (alt backspace)
-    bindkey -M emacs '^M' eva-accept-line           # Enter
-    bindkey -M emacs '^I' eva-accept                # Tab → accept full
-    bindkey -M emacs '^[^I' eva-accept-word         # Alt+Tab → accept next word
-
-    # Override all printable ASCII via keymap trick
-    # For letters, digits, and symbols, route through eva-self-insert
-    local c
-    for c in {a..z} {A..Z} {0..9}; do
-        bindkey -M emacs "$c" eva-self-insert
-    done
-    # Common symbols
-    for c in '-' '=' '/' '.' ',' '\' '"' "'" ';' ':' '!' '@' '#' '$' '%' '^' '&' '*' '(' ')' '_' '+' '{' '}' '[' ']' '<' '>' '?' '~' '`'; do
-        bindkey -M emacs "$c" eva-self-insert
-    done
-    # Space is already bound above, but bind pipe separately
-    bindkey -M emacs '|' eva-self-insert
-}
-
-# --- Initialize (via traditional precmd hook) ---
-_eva_precmd_first() {
-    # Remove self from precmd (one-shot)
-    precmd_functions=("${precmd_functions[@]:#_eva_precmd_first}")
-
-    # ZLE is now fully ready — safe to register widgets and bind keys
-    _eva_setup
-    _eva_bind_keys
-}
-precmd_functions+=(_eva_precmd_first)
+# Schedule init for first precmd (ZLE guaranteed ready)
+precmd_functions+=(_eva_init)
 
 # --- Public API ---
-# eva-status: check if daemon is running
 eva-status() {
     if [[ -S "$EVA_HOME/eva.sock" ]]; then
         echo "eva daemon socket found at $EVA_HOME/eva.sock"
@@ -290,7 +245,6 @@ finally:
     fi
 }
 
-# eva-restart: restart the bridge (useful if it gets stuck)
 eva-restart() {
     _EVA_BRIDGE_OK=false
     _EVA_SEQ=0
