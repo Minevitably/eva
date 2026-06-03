@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""
+eva-bridge — persistent subprocess that relays prediction requests from
+ZSH (via zpty stdin) to the eva daemon (via Unix socket) and writes
+responses back to stdout.
+
+Protocol:
+  stdin:  JSON lines from shell (one request per line)
+  stdout: <seq>\t<prediction> lines back to shell
+
+This bridge exists because ZSH is single-threaded and we need non-blocking
+I/O. zpty spawns this as a persistent subprocess; ZSH writes requests and
+reads responses asynchronously.
+"""
+
+import os
+import sys
+import json
+import socket
+import signal
+from pathlib import Path
+
+EVA_HOME = Path(os.environ.get("EVA_HOME", Path.home() / ".eva"))
+SOCKET_PATH = EVA_HOME / "eva.sock"
+TIMEOUT = float(os.environ.get("EVA_BRIDGE_TIMEOUT", "10"))
+
+
+def send_request(request: dict) -> dict | None:
+    """Send a request to the daemon and return the response."""
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(TIMEOUT)
+        sock.connect(str(SOCKET_PATH))
+
+        payload = (json.dumps(request) + "\n").encode("utf-8")
+        sock.sendall(payload)
+
+        # Read response line
+        response_data = b""
+        while b"\n" not in response_data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response_data += chunk
+
+        sock.close()
+
+        if response_data:
+            return json.loads(response_data.decode("utf-8").strip())
+    except (socket.timeout, ConnectionRefusedError, FileNotFoundError):
+        pass  # daemon not running or busy
+    except Exception:
+        pass  # any other error, just return None
+
+    return None
+
+
+def main():
+    # Ignore SIGPIPE so we don't die when the shell closes
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+    # Read stdin line by line (each line is a JSON request from zpty)
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            request = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        seq = request.get("seq", 0)
+        response = send_request(request)
+
+        if response and response.get("prediction"):
+            prediction = response["prediction"]
+        else:
+            prediction = ""
+
+        # Output in simple format for ZSH to parse: seq\tprediction
+        sys.stdout.write(f"{seq}\t{prediction}\n")
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()
