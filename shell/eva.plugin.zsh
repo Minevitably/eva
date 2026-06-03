@@ -256,23 +256,19 @@ _eva_bind_keys() {
     bindkey -M emacs '|' eva-self-insert
 }
 
-# --- Initialize ---
-_eva_init() {
-    # Defer to line-init so ZLE is fully ready before bindkey
-    autoload -Uz add-zle-hook-widget
-    add-zle-hook-widget line-init _eva_real_init
-}
+# --- Initialize (via zle-line-init widget wrapper) ---
+_eva_line_init() {
+    # Restore original zle-line-init
+    zle -N zle-line-init 2>/dev/null
 
-_eva_real_init() {
-    # Run once, then remove self
-    add-zle-hook-widget -d line-init _eva_real_init 2>/dev/null
-
+    # Run our setup once
     _eva_setup
     _eva_bind_keys
-}
 
-# Auto-initialize when sourced (schedules via precmd)
-_eva_init
+    # Call original zle-line-init
+    zle zle-line-init 2>/dev/null
+}
+zle -N zle-line-init _eva_line_init
 
 # --- Public API ---
 # eva-status: check if daemon is running
