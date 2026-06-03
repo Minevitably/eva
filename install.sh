@@ -247,8 +247,9 @@ main() {
             ;;
         --reinstall|reinstall)
             uninstall
-            exec bash "$0" install
-            ;;
+            cmd="install"
+            ;&
+        install|*)
         install|*)
             echo ""
             echo -e "${CYAN}  eva — AI Shell Assistant Installer${NC}"
