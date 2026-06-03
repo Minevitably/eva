@@ -250,7 +250,6 @@ main() {
             cmd="install"
             ;&
         install|*)
-        install|*)
             echo ""
             echo -e "${CYAN}  eva — AI Shell Assistant Installer${NC}"
             echo ""
