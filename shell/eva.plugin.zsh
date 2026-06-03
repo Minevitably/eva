@@ -7,10 +7,14 @@
 # Installation: source this file in your .zshrc
 #
 
+# --- Load required zsh modules ---
+zmodload zsh/zpty  2>/dev/null || { echo "eva: zsh/zpty module not available" >&2; return 1; }
+zmodload zsh/sched 2>/dev/null || { echo "eva: zsh/sched module not available" >&2; return 1; }
+
 # --- Config ---
 : ${EVA_HOME:="$HOME/.eva"}
 : ${EVA_DEBOUNCE_MS:=200}       # min ms between prediction requests
-: ${EVA_POLL_INTERVAL:=0.08}    # seconds between zpty reads
+: ${EVA_POLL_INTERVAL:=1}        # seconds between zpty reads
 
 # --- State ---
 typeset -g _EVA_SEQ=0           # latest request sequence number
