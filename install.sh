@@ -203,19 +203,65 @@ print_summary() {
     echo ""
 }
 
+# --- Uninstall ---
+uninstall() {
+    step "Uninstalling eva..."
+
+    # Kill daemon
+    if [[ -f "$EVA_HOME/eva.pid" ]]; then
+        kill "$(cat "$EVA_HOME/eva.pid")" 2>/dev/null || true
+    fi
+    # Also kill any stragglers
+    pkill -f "python3.*daemon.py" 2>/dev/null || true
+    pkill -f "python3.*eva-bridge" 2>/dev/null || true
+
+    # Remove EVA_HOME
+    if [[ -d "$EVA_HOME" ]]; then
+        rm -rf "$EVA_HOME"
+        info "Removed $EVA_HOME"
+    fi
+
+    # Clean .zshrc
+    local zshrc="$HOME/.zshrc"
+    if [[ -f "$zshrc" ]]; then
+        sed -i '/eva.plugin.zsh/d' "$zshrc"
+        sed -i '/# eva — AI Shell Assistant/d' "$zshrc"
+        sed -i '/export EVA_API_KEY=/d' "$zshrc"
+        sed -i '/export EVA_HOME=/d' "$zshrc"
+        info "Cleaned $zshrc"
+    fi
+
+    echo ""
+    echo -e "${GREEN}  eva uninstalled.${NC}"
+    echo -e "  Restart your shell for a clean state: ${YELLOW}exec zsh${NC}"
+    echo ""
+}
+
 # --- Run ---
 main() {
-    echo ""
-    echo -e "${CYAN}  eva — AI Shell Assistant Installer${NC}"
-    echo ""
+    local cmd="${1:-install}"
 
-    check_prereqs
-    setup_dirs
-    copy_files
-    install_deps
-    start_daemon
-    configure_shell
-    print_summary
+    case "$cmd" in
+        --uninstall|uninstall)
+            uninstall
+            ;;
+        --reinstall|reinstall)
+            uninstall
+            exec bash "$0" install
+            ;;
+        install|*)
+            echo ""
+            echo -e "${CYAN}  eva — AI Shell Assistant Installer${NC}"
+            echo ""
+            check_prereqs
+            setup_dirs
+            copy_files
+            install_deps
+            start_daemon
+            configure_shell
+            print_summary
+            ;;
+    esac
 }
 
 main "$@"
