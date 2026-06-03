@@ -61,15 +61,50 @@ install_deps() {
 
     # Ensure pip is available
     if ! python3 -m pip --version &>/dev/null; then
-        warn "pip is not installed. Attempting to bootstrap via ensurepip..."
-        python3 -m ensurepip --upgrade 2>/dev/null || {
-            error "Cannot install pip. Install it manually:"
-            error "  Debian/Ubuntu: sudo apt install python3-pip"
-            error "  Fedora:        sudo dnf install python3-pip"
-            error "  Arch:          sudo pacman -S python-pip"
-            error "Or: python3 -m ensurepip --upgrade"
+        warn "pip is not installed."
+
+        # Try ensurepip first
+        if python3 -m ensurepip --upgrade 2>/dev/null; then
+            info "pip bootstrapped via ensurepip"
+        # Auto-install on Debian/Ubuntu
+        elif command -v apt &>/dev/null; then
+            warn "Installing python3-pip via apt..."
+            if [[ $EUID -eq 0 ]]; then
+                apt update -qq && apt install -y -qq python3-pip
+            elif command -v sudo &>/dev/null; then
+                sudo apt update -qq && sudo apt install -y -qq python3-pip
+            else
+                error "Run: apt install python3-pip  (need root)"
+                exit 1
+            fi
+        # Auto-install on Fedora
+        elif command -v dnf &>/dev/null; then
+            warn "Installing python3-pip via dnf..."
+            if [[ $EUID -eq 0 ]]; then
+                dnf install -y -q python3-pip
+            elif command -v sudo &>/dev/null; then
+                sudo dnf install -y -q python3-pip
+            else
+                error "Run: dnf install python3-pip  (need root)"
+                exit 1
+            fi
+        # Auto-install on Arch
+        elif command -v pacman &>/dev/null; then
+            warn "Installing python-pip via pacman..."
+            if [[ $EUID -eq 0 ]]; then
+                pacman -S --noconfirm python-pip
+            elif command -v sudo &>/dev/null; then
+                sudo pacman -S --noconfirm python-pip
+            else
+                error "Run: pacman -S python-pip  (need root)"
+                exit 1
+            fi
+        else
+            error "Cannot install pip automatically. Unknown distro."
+            error "Please install python3-pip manually and re-run."
             exit 1
-        }
+        fi
+        info "pip installed successfully"
     fi
 
     python3 -m pip install --user --quiet openai 2>/dev/null || {
