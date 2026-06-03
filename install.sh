@@ -150,7 +150,7 @@ start_daemon() {
     local waited=0
     while [[ ! -S "$EVA_HOME/eva.sock" ]] && (( waited < 5 )); do
         sleep 0.5
-        (( waited++ ))
+        waited=$(( waited + 1 ))
     done
 
     if [[ -S "$EVA_HOME/eva.sock" ]]; then
