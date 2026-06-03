@@ -58,6 +58,20 @@ setup_dirs() {
 # --- Install Python dependency ---
 install_deps() {
     step "Installing Python dependencies..."
+
+    # Ensure pip is available
+    if ! python3 -m pip --version &>/dev/null; then
+        warn "pip is not installed. Attempting to bootstrap via ensurepip..."
+        python3 -m ensurepip --upgrade 2>/dev/null || {
+            error "Cannot install pip. Install it manually:"
+            error "  Debian/Ubuntu: sudo apt install python3-pip"
+            error "  Fedora:        sudo dnf install python3-pip"
+            error "  Arch:          sudo pacman -S python-pip"
+            error "Or: python3 -m ensurepip --upgrade"
+            exit 1
+        }
+    fi
+
     python3 -m pip install --user --quiet openai 2>/dev/null || {
         warn "pip install failed, trying with --break-system-packages..."
         python3 -m pip install --user --quiet --break-system-packages openai
